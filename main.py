@@ -26,7 +26,6 @@ def actualizar_subastas_xdraco():
     nfts_acumulados = []
 
     for page in range(1, 4):
-        # Subdominio corregido a nft.xdraco.com
         url_target = f"https://nft.xdraco.com/api/nft/lists?listType=sale&languageCode=es&page={page}"
         proxy_url = f"http://api.scraperapi.com?api_key={SCRAPER_API_KEY}&url={urllib.parse.quote(url_target)}&render=true"
         
@@ -66,9 +65,6 @@ def obtener_nfts():
     return {
         "status": "ok",
         "total": len(BASE_DE_DATOS_NFTS),
-        "diagnostico": DIAGNOSTICO_ESTADO,
-        "items": BASE_DE_DATOS_NFTS
-    }
         "diagnostico": DIAGNOSTICO_ESTADO,
         "items": BASE_DE_DATOS_NFTS
     }
