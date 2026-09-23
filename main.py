@@ -16,63 +16,68 @@ app.add_middleware(
 BASE_DE_DATOS_NFTS = []
 DIAGNOSTICO_ESTADO = "Iniciando servidor..."
 
+# Lista de servidores backend conocidos de WeMade / xDRACO para NFT
+CANDIDATE_ENDPOINTS = [
+    "https://draco-nft.wemade.games/api/v1/nft/lists",
+    "https://draco-nft.wemade.games/api/nft/lists",
+    "https://nft-api.xdraco.com/api/v1/nft/lists",
+    "https://nft-api.xdraco.com/api/nft/lists",
+    "https://www.xdraco.com/api/v1/nft/lists"
+]
+
 def actualizar_subastas_xdraco():
     global BASE_DE_DATOS_NFTS, DIAGNOSTICO_ESTADO
-    print("🔄 Consultando xDRACO...")
+    print("🔄 Escaneando endpoints backend de xDRACO...")
     nfts_acumulados = []
+    endpoint_activo = None
 
-    # Cabeceras completas imitando la petición AJAX nativa de la web
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
         "Accept": "application/json, text/plain, */*",
-        "X-Requested-With": "XMLHttpRequest",
-        "Referer": "https://www.xdraco.com/nft",
         "Origin": "https://www.xdraco.com",
-        "Sec-Fetch-Dest": "empty",
-        "Sec-Fetch-Mode": "cors",
-        "Sec-Fetch-Site": "same-origin"
+        "Referer": "https://www.xdraco.com/nft",
+        "X-Requested-With": "XMLHttpRequest"
     }
 
-    # Rutas candidatas de la API de xDRACO
-    candidate_urls = [
-        "https://www.xdraco.com/api/nft/lists",
-        "https://www.xdraco.com/api/nft/list"
-    ]
-
-    diagnosticos = []
-
-    for page in range(1, 4):
-        exito_pagina = False
-
-        for base_url in candidate_urls:
-            url_target = f"{base_url}?listType=sale&languageCode=es&page={page}"
+    # 1. Identificar cuál endpoint responde JSON
+    diagnosticos_log = []
+    for base_url in CANDIDATE_ENDPOINTS:
+        test_url = f"{base_url}?listType=sale&languageCode=es&page=1"
+        try:
+            res = requests_cffi.get(test_url, headers=headers, impersonate="chrome", timeout=10)
+            contenido = res.text.strip()
             
-            try:
-                res = requests_cffi.get(url_target, headers=headers, impersonate="chrome", timeout=15)
-                contenido = res.text.strip()
+            if res.status_code == 200 and contenido.startswith("{"):
+                endpoint_activo = base_url
+                break
+            else:
+                tipo = "HTML" if contenido.startswith("<") else f"HTTP {res.status_code}"
+                diagnosticos_log.append(f"{base_url.split('/')[2]}: {tipo}")
+        except Exception as e:
+            diagnosticos_log.append(f"{base_url.split('/')[2]}: Error de red")
 
-                if res.status_code == 200 and contenido.startswith("{"):
-                    data = res.json()
-                    items = data.get("data", {}).get("lists", []) or data.get("data", {}).get("list", [])
-                    if isinstance(items, list) and len(items) > 0:
-                        nfts_acumulados.extend(items)
-                        exito_pagina = True
-                        break
-                    elif isinstance(items, list):
-                        diagnosticos.append(f"200 OK pero 0 elementos en {base_url}")
-                else:
-                    preview = contenido[:50].replace("\n", " ")
-                    diagnosticos.append(f"HTTP {res.status_code} ({preview}) en {base_url}")
-            except Exception as e:
-                diagnosticos.append(f"Error en {base_url}: {str(e)}")
+    if not endpoint_activo:
+        DIAGNOSTICO_ESTADO = "Ningún endpoint respondió JSON. Intentos: " + " | ".join(diagnosticos_log[:3])
+        return
 
-        if not exito_pagina and not nfts_acumulados:
-            DIAGNOSTICO_ESTADO = " | ".join(diagnosticos[:2])
+    # 2. Descargar páginas del endpoint activo
+    for page in range(1, 4):
+        url_target = f"{endpoint_activo}?listType=sale&languageCode=es&page={page}"
+        try:
+            res = requests_cffi.get(url_target, headers=headers, impersonate="chrome", timeout=15)
+            if res.status_code == 200 and res.text.strip().startswith("{"):
+                data = res.json()
+                items = data.get("data", {}).get("lists", []) or data.get("data", {}).get("list", [])
+                if isinstance(items, list):
+                    nfts_acumulados.extend(items)
+        except Exception as e:
             break
 
     if nfts_acumulados:
         BASE_DE_DATOS_NFTS = nfts_acumulados
-        DIAGNOSTICO_ESTADO = f"✅ Éxito total: {len(nfts_acumulados)} personajes cargados desde xDRACO."
+        DIAGNOSTICO_ESTADO = f"✅ Éxito ({endpoint_activo.split('/')[2]}): {len(nfts_acumulados)} personajes cargados."
+    else:
+        DIAGNOSTICO_ESTADO = f"Conectado a {endpoint_activo} pero no se encontraron items."
 
 def planificador_background():
     actualizar_subastas_xdraco()
