@@ -43,49 +43,71 @@ async def obtener_nfts_con_playwright():
             except Exception:
                 await asyncio.sleep(5)
 
-            DIAGNOSTICO_ESTADO = "🔍 Extrayendo y formateando personajes..."
+            DIAGNOSTICO_ESTADO = "🔍 Extrayendo tarjetas del DOM..."
             
-            # Scraping directo en el DOM
+            # Extraer elementos desde el DOM de la página
             raw_cards = await page.evaluate("""() => {
                 const cards = Array.from(document.querySelectorAll("a[href*='/character/'], a[href*='/nft/'], div[class*='card'], div[class*='item']"));
                 return cards.map((c, idx) => {
                     const text = c.innerText || "";
                     const img = c.querySelector("img") ? c.querySelector("img").src : "";
-                    const link = c.tagName === "A" ? c.href : (c.querySelector("a") ? c.querySelector("a").href : "");
+                    
+                    // Obtener el atributo href directo del elemento o de sus hijos
+                    let href = c.getAttribute("href") || "";
+                    if (!href && c.querySelector("a")) {
+                        href = c.querySelector("a").getAttribute("href") || "";
+                    }
+                    if (!href && c.tagName === "A") {
+                        href = c.href;
+                    }
+
                     return {
                         id: idx + 1,
                         text: text,
                         image: img,
-                        link: link
+                        href: href
                     };
                 }).filter(item => item.text.trim().length > 0);
             }""")
 
-            # Procesar y limpiar la información para el Frontend
+            # Procesar y estandarizar las tarjetas
             for item in raw_cards:
                 lines = [l.strip() for l in item["text"].split("\n") if l.strip()]
-                
-                # Extracción de precio, poder y nivel con expresiones regulares
                 full_text = " ".join(lines)
                 
-                # Buscar patrón de precio (ej. 150 DRACO, $50, etc)
+                # Extracción de Precio
                 price_match = re.search(r'(\d+[\d,.]*\s*(USD|DRACO|HYDRA|WEMIX|\$))', full_text, re.IGNORECASE)
                 price = price_match.group(1) if price_match else (lines[-1] if len(lines) > 2 else "Consultar")
 
-                # Buscar poder (PS / Power)
+                # Extracción de Poder (PS)
                 power_match = re.search(r'(\d{3,6}[\d,.]*)', full_text)
                 power = power_match.group(1) if power_match else "N/A"
 
                 nombre = lines[0] if len(lines) > 0 else f"Personaje #{item['id']}"
 
+                # Normalización del enlace para dirigir correctamente a MIR4 / HofGamer NFT
+                raw_href = item.get("href", "")
+                if raw_href.startswith("http"):
+                    final_url = raw_href
+                elif raw_href.startswith("/"):
+                    final_url = f"https://nft.hofgamer.com{raw_href}"
+                elif raw_href:
+                    final_url = f"https://nft.hofgamer.com/mir4/{raw_href}"
+                else:
+                    final_url = "https://nft.hofgamer.com/mir4/"
+
+                # Objeto con claves compatibles para cualquier tipo de frontend
                 nfts_procesados.append({
                     "id": item["id"],
                     "name": nombre,
+                    "character_name": nombre,
                     "title": nombre,
                     "power": power,
                     "price": price,
                     "image": item["image"],
-                    "url": item["link"],
+                    "icon": item["image"],
+                    "url": final_url,
+                    "link": final_url,
                     "details": lines
                 })
 
