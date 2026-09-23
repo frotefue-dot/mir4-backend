@@ -10,86 +10,95 @@ DIAGNOSTICO_ESTADO = "Iniciando servidor..."
 
 async def obtener_nfts_con_playwright():
     global BASE_DE_DATOS_NFTS, DIAGNOSTICO_ESTADO
-    DIAGNOSTICO_ESTADO = "🔄 Iniciando Chromium en Render..."
-    nfts_encontrados = []
+    DIAGNOSTICO_ESTADO = "🔄 Abriendo Chromium en Render..."
+    nfts_capturados = []
 
     try:
         async with async_playwright() as p:
             browser = await p.chromium.launch(
                 headless=True,
-                args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
+                args=[
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-gpu"
+                ]
             )
 
             context = await browser.new_context(
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-                viewport={"width": 1280, "height": 800}
+                viewport={"width": 1400, "height": 900}
             )
 
             page = await context.new_page()
 
-            # 1. Interceptor de red de respaldo (por si acaso)
+            # 1. Interceptar respuestas JSON por si se emiten en red
             async def interceptar_respuestas(response):
-                nonlocal nfts_encontrados
+                nonlocal nfts_capturados
                 try:
-                    if "application/json" in response.headers.get("content-type", ""):
+                    ct = response.headers.get("content-type", "")
+                    if "json" in ct or "graphql" in response.url:
                         data = await response.json()
-                        items = data if isinstance(data, list) else (
-                            data.get("data") or data.get("items") or data.get("lists") or data.get("nfts")
-                        )
+                        items = None
+                        if isinstance(data, list):
+                            items = data
+                        elif isinstance(data, dict):
+                            items = (
+                                data.get("data", {}).get("nfts") or 
+                                data.get("data", {}).get("items") or 
+                                data.get("data", {}).get("lists") or 
+                                data.get("items") or 
+                                data.get("nfts")
+                            )
                         if isinstance(items, list) and len(items) > 0:
-                            nfts_encontrados = items
+                            nfts_capturados = items
                 except Exception:
                     pass
 
             page.on("response", interceptar_respuestas)
 
-            url_objetivo = "https://nft.hofgamer.com/mir4/?limit=48&page=1"
-            DIAGNOSTICO_ESTADO = f"🌐 Cargando {url_objetivo}..."
-            
-            await page.goto(url_objetivo, wait_until="domcontentloaded", timeout=45000)
-            await asyncio.sleep(4)  # Esperar a que el DOM se asiente
+            url_target = "https://nft.hofgamer.com/mir4/?limit=48&page=1"
+            DIAGNOSTICO_ESTADO = f"🌐 Cargando {url_target}..."
+            await page.goto(url_target, wait_until="domcontentloaded", timeout=60000)
 
-            # 2. Extracción directa del HTML procesado por el navegador
-            if not nfts_encontrados:
-                DIAGNOSTICO_ESTADO = "🔍 Extrayendo datos directly del DOM (__NEXT_DATA__)..."
+            DIAGNOSTICO_ESTADO = "⏳ Esperando renderizado de elementos en pantalla..."
+            
+            # Esperar a que cargue la lista o elementos visibles en la interfaz
+            try:
+                await page.wait_for_selector("a[href*='/character/'], a[href*='/nft/'], div[class*='card'], div[class*='item']", timeout=15000)
+            except Exception:
+                await asyncio.sleep(5)
+
+            # 2. Si la intercepción de red no atrapó datos, extraer directamente del DOM de la página
+            if not nfts_capturados:
+                DIAGNOSTICO_ESTADO = "🔍 Extrayendo tarjetas de personajes desde el DOM..."
                 
-                # Extraer la etiqueta __NEXT_DATA__
-                next_data_raw = await page.evaluate("""() => {
-                    const el = document.getElementById('__NEXT_DATA__');
-                    return el ? el.textContent : null;
+                # Scraping directo en el navegador de los elementos visuales
+                dom_items = await page.evaluate("""() => {
+                    const cards = Array.from(document.querySelectorAll("a[href*='/character/'], a[href*='/nft/'], div[class*='card'], div[class*='item']"));
+                    return cards.map((c, idx) => {
+                        const text = c.innerText || "";
+                        const img = c.querySelector("img") ? c.querySelector("img").src : "";
+                        const link = c.tagName === "A" ? c.href : (c.querySelector("a") ? c.querySelector("a").href : "");
+                        return {
+                            id: idx + 1,
+                            info_raw: text.split("\\n").filter(t => t.trim().length > 0),
+                            imagen: img,
+                            enlace: link
+                        };
+                    }).filter(item => item.info_raw.length > 0);
                 }""")
 
-                if next_data_raw:
-                    try:
-                        payload = json.loads(next_data_raw)
-                        page_props = payload.get("props", {}).get("pageProps", {})
+                if dom_items and len(dom_items) > 0:
+                    nfts_capturados = dom_items
 
-                        # Buscar arreglos en pageProps
-                        def buscar_listas(obj):
-                            if isinstance(obj, dict):
-                                for k, v in obj.items():
-                                    if isinstance(v, list) and len(v) > 0 and isinstance(v[0], dict):
-                                        return v
-                                    res = buscar_listas(v)
-                                    if res: return res
-                            elif isinstance(obj, list):
-                                for elem in obj:
-                                    res = buscar_listas(elem)
-                                    if res: return res
-                            return None
-
-                        extracted = buscar_listas(page_props)
-                        if extracted:
-                            nfts_encontrados = extracted
-                    except Exception as e:
-                        print(f"Error parseando __NEXT_DATA__: {e}")
-
-            # 3. Resultado final
-            if nfts_encontrados:
-                BASE_DE_DATOS_NFTS = nfts_encontrados
-                DIAGNOSTICO_ESTADO = f"✅ Éxito total: {len(nfts_encontrados)} personajes cargados desde HofGamer."
+            if nfts_capturados:
+                BASE_DE_DATOS_NFTS = nfts_capturados
+                DIAGNOSTICO_ESTADO = f"✅ Éxito: {len(nfts_capturados)} elementos capturados desde HofGamer."
             else:
-                DIAGNOSTICO_ESTADO = "⚠️ No se encontraron listas de personajes en la página."
+                # Extraer título o estado HTML si todo falla para ver qué visualiza el navegador
+                page_title = await page.title()
+                DIAGNOSTICO_ESTADO = f"⚠️ Título de página: '{page_title}'. No se detectaron elementos de personajes en el DOM."
 
             await browser.close()
 
