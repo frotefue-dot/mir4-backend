@@ -3,6 +3,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from curl_cffi import requests as requests_cffi
 import threading
 import time
+import json
+import re
 
 app = FastAPI()
 
@@ -16,74 +18,113 @@ app.add_middleware(
 BASE_DE_DATOS_NFTS = []
 DIAGNOSTICO_ESTADO = "Iniciando servidor..."
 
-# Lista de servidores backend conocidos de WeMade / xDRACO para NFT
-CANDIDATE_ENDPOINTS = [
-    "https://draco-nft.wemade.games/api/v1/nft/lists",
-    "https://draco-nft.wemade.games/api/nft/lists",
-    "https://nft-api.xdraco.com/api/v1/nft/lists",
-    "https://nft-api.xdraco.com/api/nft/lists",
-    "https://www.xdraco.com/api/v1/nft/lists"
-]
+def extraer_json_de_html(html_text):
+    """Extrae objetos o arreglos JSON incrustados en páginas HTML (Next.js, Nuxt, React)."""
+    # 1. Buscar en __NEXT_DATA__ (estándar de Next.js usado por HofGamer)
+    match_next = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', html_text, re.DOTALL)
+    if match_next:
+        try:
+            data = json.loads(match_next.group(1))
+            props = data.get("props", {}).get("pageProps", {})
+            for key in ["nfts", "items", "lists", "characters", "data", "list", "results"]:
+                if key in props and isinstance(props[key], list) and len(props[key]) > 0:
+                    return props[key]
+                if isinstance(props.get(key), dict):
+                    sub = props[key].get("items") or props[key].get("lists") or props[key].get("data")
+                    if isinstance(sub, list) and len(sub) > 0:
+                        return sub
+        except Exception:
+            pass
 
-def actualizar_subastas_xdraco():
+    # 2. Búsqueda de respaldos en scripts con arreglos JSON
+    scripts = re.findall(r'<script[^>]*>(.*?)</script>', html_text, re.DOTALL)
+    for s in scripts:
+        if "character" in s.lower() or "price" in s.lower() or "nft" in s.lower():
+            json_matches = re.findall(r'(\[\s*\{.*?\}\s*\])', s, re.DOTALL)
+            for jm in json_matches:
+                try:
+                    parsed = json.loads(jm)
+                    if isinstance(parsed, list) and len(parsed) > 0:
+                        return parsed
+                except Exception:
+                    continue
+    return None
+
+def actualizar_subastas():
     global BASE_DE_DATOS_NFTS, DIAGNOSTICO_ESTADO
-    print("🔄 Escaneando endpoints backend de xDRACO...")
+    print("🔄 Consultando HofGamer / xDRACO...")
     nfts_acumulados = []
-    endpoint_activo = None
 
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Accept": "application/json, text/plain, */*",
-        "Origin": "https://www.xdraco.com",
-        "Referer": "https://www.xdraco.com/nft",
-        "X-Requested-With": "XMLHttpRequest"
+        "Accept": "application/json, text/html, application/xhtml+xml, */*",
+        "Accept-Language": "es-ES,es;q=0.9,en;q=0.8",
+        "Referer": "https://nft.hofgamer.com/",
     }
 
-    # 1. Identificar cuál endpoint responde JSON
+    # Fuentes objetivo: HofGamer principal + endpoints API de respaldo
+    sources = [
+        "https://nft.hofgamer.com/mir4/?limit=48&page=1",
+        "https://nft.hofgamer.com/api/mir4?limit=48&page=1",
+        "https://nft.hofgamer.com/api/nft?limit=48&page=1",
+        "https://gate.xdraco.com/nft/lists?listType=sale&languageCode=es&page=1",
+        "https://nftmanager.xdraco.com/api/nft/lists?listType=sale&languageCode=es&page=1"
+    ]
+
     diagnosticos_log = []
-    for base_url in CANDIDATE_ENDPOINTS:
-        test_url = f"{base_url}?listType=sale&languageCode=es&page=1"
+    fuente_exitosa = None
+
+    for url in sources:
         try:
-            res = requests_cffi.get(test_url, headers=headers, impersonate="chrome", timeout=10)
+            res = requests_cffi.get(url, headers=headers, impersonate="chrome", timeout=12)
             contenido = res.text.strip()
-            
-            if res.status_code == 200 and contenido.startswith("{"):
-                endpoint_activo = base_url
-                break
-            else:
-                tipo = "HTML" if contenido.startswith("<") else f"HTTP {res.status_code}"
-                diagnosticos_log.append(f"{base_url.split('/')[2]}: {tipo}")
-        except Exception as e:
-            diagnosticos_log.append(f"{base_url.split('/')[2]}: Error de red")
 
-    if not endpoint_activo:
-        DIAGNOSTICO_ESTADO = "Ningún endpoint respondió JSON. Intentos: " + " | ".join(diagnosticos_log[:3])
-        return
-
-    # 2. Descargar páginas del endpoint activo
-    for page in range(1, 4):
-        url_target = f"{endpoint_activo}?listType=sale&languageCode=es&page={page}"
-        try:
-            res = requests_cffi.get(url_target, headers=headers, impersonate="chrome", timeout=15)
-            if res.status_code == 200 and res.text.strip().startswith("{"):
+            # Opción A: La URL respondió directamente con JSON
+            if res.status_code == 200 and (contenido.startswith("{") or contenido.startswith("[")):
                 data = res.json()
-                items = data.get("data", {}).get("lists", []) or data.get("data", {}).get("list", [])
-                if isinstance(items, list):
-                    nfts_acumulados.extend(items)
+                if isinstance(data, list) and len(data) > 0:
+                    nfts_acumulados = data
+                    fuente_exitosa = url
+                    break
+                elif isinstance(data, dict):
+                    items = (
+                        data.get("data", {}).get("lists") or 
+                        data.get("data", {}).get("list") or 
+                        data.get("items") or 
+                        data.get("data") or 
+                        data.get("nfts")
+                    )
+                    if isinstance(items, list) and len(items) > 0:
+                        nfts_acumulados = items
+                        fuente_exitosa = url
+                        break
+
+            # Opción B: Es HTML (página SSR de HofGamer) -> extraemos el JSON embebido
+            elif res.status_code == 200 and contenido.startswith("<"):
+                extracted = extraer_json_de_html(contenido)
+                if extracted and isinstance(extracted, list) and len(extracted) > 0:
+                    nfts_acumulados = extracted
+                    fuente_exitosa = f"{url} (extraído de HTML)"
+                    break
+                else:
+                    diagnosticos_log.append(f"{url.split('/')[2]}: HTML recibido sin JSON reconocible")
+            else:
+                diagnosticos_log.append(f"{url.split('/')[2]}: HTTP {res.status_code}")
+
         except Exception as e:
-            break
+            diagnosticos_log.append(f"{url.split('/')[2]}: Error {str(e)}")
 
     if nfts_acumulados:
         BASE_DE_DATOS_NFTS = nfts_acumulados
-        DIAGNOSTICO_ESTADO = f"✅ Éxito ({endpoint_activo.split('/')[2]}): {len(nfts_acumulados)} personajes cargados."
+        DIAGNOSTICO_ESTADO = f"✅ Éxito total desde {fuente_exitosa}: {len(nfts_acumulados)} personajes cargados."
     else:
-        DIAGNOSTICO_ESTADO = f"Conectado a {endpoint_activo} pero no se encontraron items."
+        DIAGNOSTICO_ESTADO = "Detalle de intentos: " + " | ".join(diagnosticos_log[:3])
 
 def planificador_background():
-    actualizar_subastas_xdraco()
+    actualizar_subastas()
     while True:
         time.sleep(900)
-        actualizar_subastas_xdraco()
+        actualizar_subastas()
 
 threading.Thread(target=planificador_background, daemon=True).start()
 
