@@ -18,32 +18,45 @@ DIAGNOSTICO_ESTADO = "Iniciando servidor..."
 
 def actualizar_subastas_xdraco():
     global BASE_DE_DATOS_NFTS, DIAGNOSTICO_ESTADO
-    print("🔄 Consultando xDRACO con huella TLS de Chrome...")
+    print("🔄 Consultando xDRACO...")
     nfts_acumulados = []
 
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Referer": "https://nft.xdraco.com/",
-        "Origin": "https://nft.xdraco.com",
+        "Referer": "https://www.xdraco.com/",
+        "Origin": "https://www.xdraco.com",
         "Accept": "application/json, text/plain, */*"
     }
 
+    # Rutas API conocidas de xDRACO
+    base_urls = [
+        "https://api.xdraco.com/nft/lists",
+        "https://api.xdraco.com/api/nft/lists"
+    ]
+
     for page in range(1, 4):
-        url_target = f"https://nft.xdraco.com/api/nft/lists?listType=sale&languageCode=es&page={page}"
+        exito_pagina = False
         
-        try:
-            # impersonate="chrome" bypasses Cloudflare sin depender de terceros
-            res = requests_cffi.get(url_target, headers=headers, impersonate="chrome", timeout=15)
+        for base_url in base_urls:
+            url_target = f"{base_url}?listType=sale&languageCode=es&page={page}"
             
-            if res.status_code == 200:
-                data = res.json()
-                items = data.get("data", {}).get("lists", [])
-                nfts_acumulados.extend(items)
-            else:
-                DIAGNOSTICO_ESTADO = f"Página {page}: HTTP {res.status_code} - Respuesta: {res.text[:80]}"
-                break
-        except Exception as e:
-            DIAGNOSTICO_ESTADO = f"Error en página {page}: {str(e)}"
+            try:
+                res = requests_cffi.get(url_target, headers=headers, impersonate="chrome", timeout=15)
+                contenido = res.text.strip()
+                
+                if res.status_code == 200 and contenido.startswith("{"):
+                    data = res.json()
+                    items = data.get("data", {}).get("lists", []) or data.get("data", {}).get("list", [])
+                    if isinstance(items, list):
+                        nfts_acumulados.extend(items)
+                        exito_pagina = True
+                        break
+                else:
+                    DIAGNOSTICO_ESTADO = f"Página {page} en {base_url}: HTTP {res.status_code} - Respuesta: {contenido[:80]}"
+            except Exception as e:
+                DIAGNOSTICO_ESTADO = f"Error en página {page} con {base_url}: {str(e)}"
+
+        if not exito_pagina and not nfts_acumulados:
             break
 
     if nfts_acumulados:
