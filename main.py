@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from playwright.async_api import async_playwright
 import asyncio
-import json
+import re
 from contextlib import asynccontextmanager
 
 BASE_DE_DATOS_NFTS = []
@@ -11,7 +11,7 @@ DIAGNOSTICO_ESTADO = "Iniciando servidor..."
 async def obtener_nfts_con_playwright():
     global BASE_DE_DATOS_NFTS, DIAGNOSTICO_ESTADO
     DIAGNOSTICO_ESTADO = "🔄 Abriendo Chromium en Render..."
-    nfts_capturados = []
+    nfts_procesados = []
 
     try:
         async with async_playwright() as p:
@@ -32,73 +32,68 @@ async def obtener_nfts_con_playwright():
 
             page = await context.new_page()
 
-            # 1. Interceptar respuestas JSON por si se emiten en red
-            async def interceptar_respuestas(response):
-                nonlocal nfts_capturados
-                try:
-                    ct = response.headers.get("content-type", "")
-                    if "json" in ct or "graphql" in response.url:
-                        data = await response.json()
-                        items = None
-                        if isinstance(data, list):
-                            items = data
-                        elif isinstance(data, dict):
-                            items = (
-                                data.get("data", {}).get("nfts") or 
-                                data.get("data", {}).get("items") or 
-                                data.get("data", {}).get("lists") or 
-                                data.get("items") or 
-                                data.get("nfts")
-                            )
-                        if isinstance(items, list) and len(items) > 0:
-                            nfts_capturados = items
-                except Exception:
-                    pass
-
-            page.on("response", interceptar_respuestas)
-
             url_target = "https://nft.hofgamer.com/mir4/?limit=48&page=1"
             DIAGNOSTICO_ESTADO = f"🌐 Cargando {url_target}..."
             await page.goto(url_target, wait_until="domcontentloaded", timeout=60000)
 
-            DIAGNOSTICO_ESTADO = "⏳ Esperando renderizado de elementos en pantalla..."
+            DIAGNOSTICO_ESTADO = "⏳ Esperando renderizado de tarjetas en pantalla..."
             
-            # Esperar a que cargue la lista o elementos visibles en la interfaz
             try:
                 await page.wait_for_selector("a[href*='/character/'], a[href*='/nft/'], div[class*='card'], div[class*='item']", timeout=15000)
             except Exception:
                 await asyncio.sleep(5)
 
-            # 2. Si la intercepción de red no atrapó datos, extraer directamente del DOM de la página
-            if not nfts_capturados:
-                DIAGNOSTICO_ESTADO = "🔍 Extrayendo tarjetas de personajes desde el DOM..."
+            DIAGNOSTICO_ESTADO = "🔍 Extrayendo y formateando personajes..."
+            
+            # Scraping directo en el DOM
+            raw_cards = await page.evaluate("""() => {
+                const cards = Array.from(document.querySelectorAll("a[href*='/character/'], a[href*='/nft/'], div[class*='card'], div[class*='item']"));
+                return cards.map((c, idx) => {
+                    const text = c.innerText || "";
+                    const img = c.querySelector("img") ? c.querySelector("img").src : "";
+                    const link = c.tagName === "A" ? c.href : (c.querySelector("a") ? c.querySelector("a").href : "");
+                    return {
+                        id: idx + 1,
+                        text: text,
+                        image: img,
+                        link: link
+                    };
+                }).filter(item => item.text.trim().length > 0);
+            }""")
+
+            # Procesar y limpiar la información para el Frontend
+            for item in raw_cards:
+                lines = [l.strip() for l in item["text"].split("\n") if l.strip()]
                 
-                # Scraping directo en el navegador de los elementos visuales
-                dom_items = await page.evaluate("""() => {
-                    const cards = Array.from(document.querySelectorAll("a[href*='/character/'], a[href*='/nft/'], div[class*='card'], div[class*='item']"));
-                    return cards.map((c, idx) => {
-                        const text = c.innerText || "";
-                        const img = c.querySelector("img") ? c.querySelector("img").src : "";
-                        const link = c.tagName === "A" ? c.href : (c.querySelector("a") ? c.querySelector("a").href : "");
-                        return {
-                            id: idx + 1,
-                            info_raw: text.split("\\n").filter(t => t.trim().length > 0),
-                            imagen: img,
-                            enlace: link
-                        };
-                    }).filter(item => item.info_raw.length > 0);
-                }""")
+                # Extracción de precio, poder y nivel con expresiones regulares
+                full_text = " ".join(lines)
+                
+                # Buscar patrón de precio (ej. 150 DRACO, $50, etc)
+                price_match = re.search(r'(\d+[\d,.]*\s*(USD|DRACO|HYDRA|WEMIX|\$))', full_text, re.IGNORECASE)
+                price = price_match.group(1) if price_match else (lines[-1] if len(lines) > 2 else "Consultar")
 
-                if dom_items and len(dom_items) > 0:
-                    nfts_capturados = dom_items
+                # Buscar poder (PS / Power)
+                power_match = re.search(r'(\d{3,6}[\d,.]*)', full_text)
+                power = power_match.group(1) if power_match else "N/A"
 
-            if nfts_capturados:
-                BASE_DE_DATOS_NFTS = nfts_capturados
-                DIAGNOSTICO_ESTADO = f"✅ Éxito: {len(nfts_capturados)} elementos capturados desde HofGamer."
+                nombre = lines[0] if len(lines) > 0 else f"Personaje #{item['id']}"
+
+                nfts_procesados.append({
+                    "id": item["id"],
+                    "name": nombre,
+                    "title": nombre,
+                    "power": power,
+                    "price": price,
+                    "image": item["image"],
+                    "url": item["link"],
+                    "details": lines
+                })
+
+            if nfts_procesados:
+                BASE_DE_DATOS_NFTS = nfts_procesados
+                DIAGNOSTICO_ESTADO = f"✅ Éxito: {len(nfts_procesados)} personajes cargados."
             else:
-                # Extraer título o estado HTML si todo falla para ver qué visualiza el navegador
-                page_title = await page.title()
-                DIAGNOSTICO_ESTADO = f"⚠️ Título de página: '{page_title}'. No se detectaron elementos de personajes en el DOM."
+                DIAGNOSTICO_ESTADO = "⚠️ No se detectaron tarjetas visuales en la página."
 
             await browser.close()
 
