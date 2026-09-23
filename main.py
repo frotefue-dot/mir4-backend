@@ -18,23 +18,28 @@ DIAGNOSTICO_ESTADO = "Iniciando servidor..."
 
 def actualizar_subastas_xdraco():
     global BASE_DE_DATOS_NFTS, DIAGNOSTICO_ESTADO
-    print("🔄 Consultando xDRACO con huella TLS de Chrome...")
+    print("🔄 Consultando xDRACO...")
     nfts_acumulados = []
 
+    # Cabeceras completas imitando la petición AJAX nativa de la web
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "X-Requested-With": "XMLHttpRequest",
         "Referer": "https://www.xdraco.com/nft",
         "Origin": "https://www.xdraco.com",
-        "Accept": "application/json, text/plain, */*"
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-origin"
     }
 
-    # Dominios principales válidos
+    # Rutas candidatas de la API de xDRACO
     candidate_urls = [
         "https://www.xdraco.com/api/nft/lists",
-        "https://xdraco.com/api/nft/lists"
+        "https://www.xdraco.com/api/nft/list"
     ]
 
-    diagnosticos_intentos = []
+    diagnosticos = []
 
     for page in range(1, 4):
         exito_pagina = False
@@ -54,15 +59,15 @@ def actualizar_subastas_xdraco():
                         exito_pagina = True
                         break
                     elif isinstance(items, list):
-                        diagnosticos_intentos.append(f"{base_url}: Respuesta 200 pero 0 items")
+                        diagnosticos.append(f"200 OK pero 0 elementos en {base_url}")
                 else:
-                    preview = contenido[:60].replace("\n", " ")
-                    diagnosticos_intentos.append(f"{base_url}: HTTP {res.status_code} ({preview})")
+                    preview = contenido[:50].replace("\n", " ")
+                    diagnosticos.append(f"HTTP {res.status_code} ({preview}) en {base_url}")
             except Exception as e:
-                diagnosticos_intentos.append(f"{base_url}: Error {str(e)}")
+                diagnosticos.append(f"Error en {base_url}: {str(e)}")
 
         if not exito_pagina and not nfts_acumulados:
-            DIAGNOSTICO_ESTADO = " | ".join(diagnosticos_intentos[:2])
+            DIAGNOSTICO_ESTADO = " | ".join(diagnosticos[:2])
             break
 
     if nfts_acumulados:
