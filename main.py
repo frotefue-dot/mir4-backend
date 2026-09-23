@@ -18,45 +18,51 @@ DIAGNOSTICO_ESTADO = "Iniciando servidor..."
 
 def actualizar_subastas_xdraco():
     global BASE_DE_DATOS_NFTS, DIAGNOSTICO_ESTADO
-    print("🔄 Consultando xDRACO...")
+    print("🔄 Consultando xDRACO con huella TLS de Chrome...")
     nfts_acumulados = []
 
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Referer": "https://www.xdraco.com/",
+        "Referer": "https://www.xdraco.com/nft",
         "Origin": "https://www.xdraco.com",
         "Accept": "application/json, text/plain, */*"
     }
 
-    # Rutas API conocidas de xDRACO
-    base_urls = [
-        "https://api.xdraco.com/nft/lists",
-        "https://api.xdraco.com/api/nft/lists"
+    # Dominios principales válidos
+    candidate_urls = [
+        "https://www.xdraco.com/api/nft/lists",
+        "https://xdraco.com/api/nft/lists"
     ]
+
+    diagnosticos_intentos = []
 
     for page in range(1, 4):
         exito_pagina = False
-        
-        for base_url in base_urls:
+
+        for base_url in candidate_urls:
             url_target = f"{base_url}?listType=sale&languageCode=es&page={page}"
             
             try:
                 res = requests_cffi.get(url_target, headers=headers, impersonate="chrome", timeout=15)
                 contenido = res.text.strip()
-                
+
                 if res.status_code == 200 and contenido.startswith("{"):
                     data = res.json()
                     items = data.get("data", {}).get("lists", []) or data.get("data", {}).get("list", [])
-                    if isinstance(items, list):
+                    if isinstance(items, list) and len(items) > 0:
                         nfts_acumulados.extend(items)
                         exito_pagina = True
                         break
+                    elif isinstance(items, list):
+                        diagnosticos_intentos.append(f"{base_url}: Respuesta 200 pero 0 items")
                 else:
-                    DIAGNOSTICO_ESTADO = f"Página {page} en {base_url}: HTTP {res.status_code} - Respuesta: {contenido[:80]}"
+                    preview = contenido[:60].replace("\n", " ")
+                    diagnosticos_intentos.append(f"{base_url}: HTTP {res.status_code} ({preview})")
             except Exception as e:
-                DIAGNOSTICO_ESTADO = f"Error en página {page} con {base_url}: {str(e)}"
+                diagnosticos_intentos.append(f"{base_url}: Error {str(e)}")
 
         if not exito_pagina and not nfts_acumulados:
+            DIAGNOSTICO_ESTADO = " | ".join(diagnosticos_intentos[:2])
             break
 
     if nfts_acumulados:
