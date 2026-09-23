@@ -12,120 +12,116 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_methods=["*"],
-    allow_headers=["*"],
 )
 
 BASE_DE_DATOS_NFTS = []
 DIAGNOSTICO_ESTADO = "Iniciando servidor..."
 
-def extraer_datos_nextjs(html_text):
-    """Extrae y busca recursivamente arreglos de NFTs dentro de __NEXT_DATA__ de HofGamer."""
-    match = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', html_text, re.DOTALL)
-    if not match:
-        return None, "No se encontró la etiqueta __NEXT_DATA__"
+def extraer_json_de_scripts(html_text):
+    """Analiza todas las etiquetas <script> en búsqueda de datos de NFTs."""
+    # 1. Buscar variables globales de estado comunes (window.__DATA__, window.__INITIAL_STATE__, etc.)
+    var_patterns = [
+        r'window\.__INITIAL_STATE__\s*=\s*(\{.*?\});',
+        r'window\.__DATA__\s*=\s*(\{.*?\});',
+        r'window\.__NUXT__\s*=\s*(\{.*?\});',
+        r'let\s+data\s*=\s*(\{.*?\});',
+        r'const\s+nfts\s*=\s*(\[.*?\]);'
+    ]
+    
+    for pattern in var_patterns:
+        match = re.search(pattern, html_text, re.DOTALL)
+        if match:
+            try:
+                parsed = json.loads(match.group(1))
+                if isinstance(parsed, list) and len(parsed) > 0:
+                    return parsed, "Variable global (lista)"
+                elif isinstance(parsed, dict):
+                    # Recorrer dict buscando listas de items
+                    for k in ["nfts", "items", "lists", "characters", "data", "results"]:
+                        val = parsed.get(k)
+                        if isinstance(val, list) and len(val) > 0:
+                            return val, f"Variable global ({k})"
+            except Exception:
+                continue
 
-    try:
-        payload = json.loads(match.group(1))
-        page_props = payload.get("props", {}).get("pageProps", {})
+    # 2. Buscar cualquier estructura JSON tipo lista de objetos dentro de scripts
+    scripts = re.findall(r'<script[^>]*>(.*?)</script>', html_text, re.DOTALL)
+    for index, script in enumerate(scripts):
+        if any(term in script.lower() for term in ["character", "price", "nft", "seller", "token"]):
+            # Buscar arreglos JSON dentro del script
+            json_arrays = re.findall(r'(\[\s*\{.*?\}\s*\])', script, re.DOTALL)
+            for jm in json_arrays:
+                try:
+                    data = json.loads(jm)
+                    if isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict):
+                        return data, f"Script #{index+1} (arreglo embebido)"
+                except Exception:
+                    continue
 
-        # Función recursiva para ubicar listas de objetos en pageProps
-        def buscar_arreglos(obj, path=""):
-            resultados = []
-            if isinstance(obj, dict):
-                for k, v in obj.items():
-                    new_path = f"{path}.{k}" if path else k
-                    if isinstance(v, list) and len(v) > 0 and isinstance(v[0], dict):
-                        resultados.append((new_path, v))
-                    elif isinstance(v, (dict, list)):
-                        resultados.extend(buscar_arreglos(v, new_path))
-            elif isinstance(obj, list):
-                for i, elem in enumerate(obj):
-                    if isinstance(elem, (dict, list)):
-                        resultados.extend(buscar_arreglos(elem, f"{path}[{i}]"))
-            return resultados
-
-        encontrados = buscar_arreglos(page_props)
-        if encontrados:
-            # Selecciona el arreglo con mayor cantidad de elementos
-            encontrados.sort(key=lambda x: len(x[1]), reverse=True)
-            path, items = encontrados[0]
-            return items, f"Extraído de __NEXT_DATA__ ({path}, {len(items)} items)"
-        
-        keys = list(page_props.keys())
-        return None, f"__NEXT_DATA__ detectado. Claves disponibles: {keys}"
-
-    except Exception as e:
-        return None, f"Error al procesar JSON de __NEXT_DATA__: {str(e)}"
+    return None, "No se encontraron datos estructurados en el HTML"
 
 def actualizar_subastas_hofgamer():
     global BASE_DE_DATOS_NFTS, DIAGNOSTICO_ESTADO
-    print("🔄 Escaneando HofGamer NFT...")
-    
+    print("🔄 Consultando HofGamer MIR4...")
+
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept": "application/json, text/html, application/xhtml+xml, */*",
         "Accept-Language": "es-ES,es;q=0.9,en;q=0.8",
         "Referer": "https://nft.hofgamer.com/",
-        "Sec-Ch-Ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
-        "Sec-Ch-Ua-Mobile": "?0",
-        "Sec-Ch-Ua-Platform": '"Windows"',
-        "Sec-Fetch-Dest": "document",
-        "Sec-Fetch-Mode": "navigate",
-        "Sec-Fetch-Site": "none",
-        "Sec-Fetch-User": "?1",
-        "Upgrade-Insecure-Requests": "1"
+        "X-Requested-With": "XMLHttpRequest"
     }
 
-    # Rutas principales de HofGamer
-    urls_hofgamer = [
-        "https://nft.hofgamer.com/",
-        "https://nft.hofgamer.com/nft",
-        "https://nft.hofgamer.com/market",
-        "https://nft.hofgamer.com/api/nfts",
-        "https://nft.hofgamer.com/api/nft",
-        "https://nft.hofgamer.com/api/market"
+    # Endpoints a probar en orden de prioridad
+    urls_objetivo = [
+        "https://nft.hofgamer.com/mir4/?limit=48&page=1",
+        "https://nft.hofgamer.com/api/mir4?limit=48&page=1",
+        "https://nft.hofgamer.com/api/v1/mir4?limit=48&page=1",
+        "https://nft.hofgamer.com/api/nft/mir4?limit=48&page=1"
     ]
 
     diagnosticos = []
     exito = False
 
-    for url in urls_hofgamer:
+    for url in urls_objetivo:
         try:
             res = requests_cffi.get(url, headers=headers, impersonate="chrome", timeout=15)
             contenido = res.text.strip()
 
             if res.status_code == 200:
-                # Opción 1: La URL responde JSON directamente
+                # Caso A: Respuesta directa en JSON (API)
                 if contenido.startswith("{") or contenido.startswith("["):
                     try:
                         data = res.json()
-                        items = data if isinstance(data, list) else data.get("data") or data.get("items") or data.get("nfts")
+                        items = data if isinstance(data, list) else (
+                            data.get("data") or data.get("items") or data.get("nfts") or data.get("lists")
+                        )
                         if isinstance(items, list) and len(items) > 0:
                             BASE_DE_DATOS_NFTS = items
-                            DIAGNOSTICO_ESTADO = f"✅ Éxito directo JSON desde {url}: {len(items)} items cargados."
+                            DIAGNOSTICO_ESTADO = f"✅ Éxito JSON desde {url}: {len(items)} items cargados."
                             exito = True
                             break
                     except Exception:
                         pass
-                
-                # Opción 2: Responde HTML (página SSR Next.js)
+
+                # Caso B: Respuesta en HTML
                 elif contenido.startswith("<"):
-                    items, msg = extraer_datos_nextjs(contenido)
+                    items, detalle = extraer_json_de_scripts(contenido)
                     if items and len(items) > 0:
                         BASE_DE_DATOS_NFTS = items
-                        DIAGNOSTICO_ESTADO = f"✅ Éxito desde {url}: {msg}"
+                        DIAGNOSTICO_ESTADO = f"✅ Éxito extraído de HTML ({url}): {len(items)} items ({detalle})."
                         exito = True
                         break
                     else:
-                        diagnosticos.append(f"{url.split('/')[-1] or 'root'}: {msg}")
+                        diagnosticos.append(f"{url.split('?')[0]}: {detalle}")
             else:
-                diagnosticos.append(f"{url.split('/')[-1] or 'root'}: HTTP {res.status_code}")
+                diagnosticos.append(f"{url.split('?')[0]}: HTTP {res.status_code}")
 
         except Exception as e:
-            diagnosticos.append(f"{url.split('/')[-1] or 'root'}: Error {str(e)}")
+            diagnosticos.append(f"{url.split('?')[0]}: Error {str(e)}")
 
     if not exito:
-        DIAGNOSTICO_ESTADO = "Diagnóstico HofGamer: " + " | ".join(diagnosticos[:2])
+        DIAGNOSTICO_ESTADO = "Intentos HofGamer: " + " | ".join(diagnosticos[:2])
 
 def planificador_background():
     actualizar_subastas_hofgamer()
