@@ -14,7 +14,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ⚠️ PEGA AQUÍ TU API KEY GRATUITA DE SCRAPERAPI1
+# ⚠️ PEGA AQUÍ TU API KEY REAL DE SCRAPERAPI (entre las comillas)
 SCRAPER_API_KEY = "dcc45acdd5909e73b6be2daf0c2edeb7"
 
 BASE_DE_DATOS_NFTS = []
@@ -22,26 +22,33 @@ DIAGNOSTICO_ESTADO = "Iniciando servidor..."
 
 def actualizar_subastas_xdraco():
     global BASE_DE_DATOS_NFTS, DIAGNOSTICO_ESTADO
-    print("🔄 Consultando xDRACO mediante IP Residencial...")
+    print("🔄 Consultando xDRACO con renderizado JavaScript...")
     nfts_acumulados = []
 
     for page in range(1, 4):
         url_target = f"https://www.xdraco.com/api/nft/lists?listType=sale&languageCode=es&page={page}"
         
-        # Petición a través de ScraperAPI para evasión de Cloudflare
-        proxy_url = f"http://api.scraperapi.com?api_key={SCRAPER_API_KEY}&url={urllib.parse.quote(url_target)}"
+        # Con render=true ScraperAPI ejecuta el JavaScript de Cloudflare de forma transparente
+        proxy_url = f"http://api.scraperapi.com?api_key={SCRAPER_API_KEY}&url={urllib.parse.quote(url_target)}&render=true"
         
         try:
-            res = requests.get(proxy_url, timeout=25)
-            if res.status_code == 200 and res.text.strip().startswith("{"):
+            res = requests.get(proxy_url, timeout=35)
+            contenido = res.text.strip()
+            
+            if res.status_code == 200 and contenido.startswith("{"):
                 data = res.json()
                 items = data.get("data", {}).get("lists", [])
                 nfts_acumulados.extend(items)
             else:
-                DIAGNOSTICO_ESTADO = f"Error en página {page}: HTTP {res.status_code}"
+                # Captura de diagnóstico en caso de recibir HTML o error
+                preview = contenido[:70].replace("\n", " ")
+                if contenido.startswith("<"):
+                    DIAGNOSTICO_ESTADO = f"Página {page}: Recibido HTML en lugar de JSON (Revisa si tu API Key es válida). Vista previa: {preview}"
+                else:
+                    DIAGNOSTICO_ESTADO = f"Página {page}: HTTP {res.status_code} - Detalle: {preview}"
                 break
         except Exception as e:
-            DIAGNOSTICO_ESTADO = f"Error de conexión: {str(e)}"
+            DIAGNOSTICO_ESTADO = f"Error de conexión en página {page}: {str(e)}"
             break
 
     if nfts_acumulados:
@@ -51,7 +58,6 @@ def actualizar_subastas_xdraco():
 def planificador_background():
     actualizar_subastas_xdraco()
     while True:
-        # Actualización cada 15 minutos para optimizar el plan gratuito
         time.sleep(900)
         actualizar_subastas_xdraco()
 
@@ -63,5 +69,7 @@ def obtener_nfts():
         "status": "ok", 
         "total": len(BASE_DE_DATOS_NFTS), 
         "diagnostico": DIAGNOSTICO_ESTADO,
+        "items": BASE_DE_DATOS_NFTS
+    }
         "items": BASE_DE_DATOS_NFTS
     }
