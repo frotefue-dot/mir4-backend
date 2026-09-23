@@ -14,7 +14,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ⚠️ PEGA AQUÍ TU API KEY GRATUITA DE SCRAPERAPI
+# ⚠️ PEGA AQUÍ TU API KEY GRATUITA DE SCRAPERAPI1
 SCRAPER_API_KEY = "dcc45acdd5909e73b6be2daf0c2edeb7"
 
 BASE_DE_DATOS_NFTS = []
