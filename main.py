@@ -13,52 +13,57 @@ def parsear_detalles_tarjeta(lines, raw_href):
     clase = "Desconocida"
     nombre = "Personaje MIR4"
     nivel = "N/A"
-    poder = "N/A"
+    poder = "--- PS"
     precio_wemix = "0 WEMIX"
     precio_usd = ""
 
-    # Limpiar y filtrar líneas basura comunes (como porcentajes de descuento, etc.)
-    lines_filtradas = [l for l in lines if not l.startswith("-") and "%" not in l and "🔥" not in l and "🔨" not in l]
+    # Limpiar y filtrar líneas vacías o basura
+    lines_filtradas = [l.strip() for l in lines if l.strip() and not l.startswith("-") and "%" not in l and "🔥" not in l and "🔨" not in l]
 
-    for i, line in enumerate(lines_filtradas):
+    for line in lines_filtradas:
         line_clean = line.strip()
+        line_lower = line_clean.lower()
         
-        # Detectar clase
+        # 1. Detectar clase
         for c in CLASES_MIR4:
-            if c.lower() in line_clean.lower():
+            if c.lower() in line_lower:
                 clase = c
                 break
 
-        # Detectar Nivel
-        if "Lv." in line_clean:
-            # Extraer formato Lv.XXX
-            partes = line_clean.split("Lv.")
+        # 2. Detectar Nivel
+        if "lv." in line_lower or "level" in line_lower:
+            partes = line_clean.split("Lv.") if "Lv." in line_clean else line_clean.split("level")
             if len(partes) > 1:
-                nivel = "Lv." + partes[1].split()[0]
+                nivel = "Lv." + partes[1].strip()
+            else:
+                nivel = line_clean
 
-        # Detectar Poder (PS)
-        if "PS" in line_clean or "ps" in line_clean:
-            poder = line_clean
+        # 3. Detectar Poder (PS)
+        if "ps" in line_lower or (line_clean.replace(',', '').isdigit() and len(line_clean.replace(',', '')) >= 5):
+            poder = line_clean if "ps" in line_lower else f"{line_clean} PS"
 
-        # Detectar WEMIX o Precios numéricos
-        if "WEMIX" in line_clean or "wemix" in line_clean:
+        # 4. Detectar Precios WEMIX o USD
+        if "wemix" in line_lower:
             precio_wemix = line_clean
-        elif line_clean.replace(',', '').isdigit() and i + 1 < len(lines_filtradas) and "WEMIX" in lines_filtradas[i+1]:
-            precio_wemix = f"{line_clean} WEMIX"
-
-        # Detectar USD
-        if "$" in line_clean:
+        elif line_clean.startswith("$"):
             precio_usd = line_clean
 
-    # Buscar nombre si quedó genérico
+    # 5. Buscar el nombre real del personaje (la línea que no sea clase, nivel, PS, ni precio)
     for line in lines_filtradas:
-        if line not in CLASES_MIR4 and not "Lv." in line and not "PS" in line and not "WEMIX" in line and not "$" in line and len(line) > 2:
+        line_lower = line.lower()
+        es_clase = any(c.lower() in line_lower for c in CLASES_MIR4)
+        es_nivel = "lv." in line_lower or "level" in line_lower
+        es_poder = "ps" in line_lower or (line.replace(',', '').isdigit() and len(line.replace(',', '')) >= 5)
+        es_precio = "wemix" in line_lower or line.startswith("$")
+        
+        if not es_clase and not es_nivel and not es_poder and not es_precio and len(line) > 1:
             nombre = line
             break
 
-    # Si hay precio WEMIX pero no USD o viceversa
+    # Consolidar precio final
     precio_final = precio_wemix if precio_wemix != "0 WEMIX" else (precio_usd if precio_usd else "Consultar")
 
+    # Construir enlace de redirección correcto
     if raw_href.startswith("http"):
         final_url = raw_href
     elif raw_href.startswith("/"):
@@ -67,10 +72,10 @@ def parsear_detalles_tarjeta(lines, raw_href):
         final_url = f"https://nft.hofgamer.com/mir4/nft/{raw_href}"
 
     return {
-        "name": nombre if nombre != "Personaje MIR4" else f"MIR4 {clase}",
+        "name": nombre,
         "class": clase,
         "level": nivel if nivel != "N/A" else "Lv. Desconocido",
-        "power": poder if poder != "N/A" else "--- PS",
+        "power": poder,
         "price": precio_final,
         "url": final_url
     }
@@ -93,7 +98,7 @@ async def obtener_nfts_con_playwright():
             page = await context.new_page()
             await page.goto("https://nft.hofgamer.com/mir4/?limit=48&page=1", wait_until="domcontentloaded", timeout=60000)
 
-            await asyncio.sleep(4) # Tiempo para renderizado de JS de la página
+            await asyncio.sleep(5) # Esperar a que renderice la tabla/tarjetas de la web
 
             raw_cards = await page.evaluate("""() => {
                 const cards = Array.from(document.querySelectorAll("a[href*='/character/'], a[href*='/nft/'], div[class*='card'], div[class*='item']"));
@@ -116,15 +121,15 @@ async def obtener_nfts_con_playwright():
                     "level": parsed["level"],
                     "power": parsed["power"],
                     "price": parsed["price"],
-                    "image": item["image"],
+                    "image": item["image"] if item["image"] else "https://www.xdraco.com/nft/assets/img/common/thumb-default.png",
                     "url": parsed["url"]
                 })
 
             BASE_DE_DATOS_NFTS = nfts_procesados
-            DIAGNOSTICO_ESTADO = f"✅ Éxito: {len(nfts_procesados)} NFTs cargados."
+            DIAGNOSTICO_ESTADO = f"✅ Éxito: {len(nfts_procesados)} NFTs cargados correctamente."
             await browser.close()
     except Exception as e:
-        DIAGNOSTICO_ESTADO = f"❌ Error: {str(e)}"
+        DIAGNOSTICO_ESTADO = f"❌ Error en sincronización: {str(e)}"
 
 async def planificador_background():
     while True:
@@ -142,4 +147,9 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 
 @app.get("/api/nfts")
 async def obtener_nfts():
-    return {"status": "ok", "total": len(BASE_DE_DATOS_NFTS), "diagnostico": DIAGNOSTICO_ESTADO, "items": BASE_DE_DATOS_NFTS}
+    return {
+        "status": "ok",
+        "total": len(BASE_DE_DATOS_NFTS),
+        "diagnostico": DIAGNOSTICO_ESTADO,
+        "items": BASE_DE_DATOS_NFTS
+    }
