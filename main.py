@@ -22,15 +22,16 @@ DIAGNOSTICO_ESTADO = "Iniciando servidor..."
 
 def actualizar_subastas_xdraco():
     global BASE_DE_DATOS_NFTS, DIAGNOSTICO_ESTADO
-    print("🔄 Consultando xDRACO con renderizado JavaScript...")
+    print("🔄 Consultando xDRACO...")
     nfts_acumulados = []
 
     for page in range(1, 4):
         url_target = f"https://nft.xdraco.com/api/nft/lists?listType=sale&languageCode=es&page={page}"
-        proxy_url = f"http://api.scraperapi.com?api_key={SCRAPER_API_KEY}&url={urllib.parse.quote(url_target)}&render=true"
+        # Sin &render=true para consulta directa en segundos
+        proxy_url = f"http://api.scraperapi.com?api_key={SCRAPER_API_KEY}&url={urllib.parse.quote(url_target)}"
         
         try:
-            res = requests.get(proxy_url, timeout=35)
+            res = requests.get(proxy_url, timeout=60)
             contenido = res.text.strip()
             
             if res.status_code == 200 and contenido.startswith("{"):
