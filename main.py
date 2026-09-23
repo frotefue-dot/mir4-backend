@@ -27,8 +27,6 @@ def actualizar_subastas_xdraco():
 
     for page in range(1, 4):
         url_target = f"https://www.xdraco.com/api/nft/lists?listType=sale&languageCode=es&page={page}"
-        
-        # Con render=true ScraperAPI ejecuta el JavaScript de Cloudflare de forma transparente
         proxy_url = f"http://api.scraperapi.com?api_key={SCRAPER_API_KEY}&url={urllib.parse.quote(url_target)}&render=true"
         
         try:
@@ -40,10 +38,9 @@ def actualizar_subastas_xdraco():
                 items = data.get("data", {}).get("lists", [])
                 nfts_acumulados.extend(items)
             else:
-                # Captura de diagnóstico en caso de recibir HTML o error
                 preview = contenido[:70].replace("\n", " ")
                 if contenido.startswith("<"):
-                    DIAGNOSTICO_ESTADO = f"Página {page}: Recibido HTML en lugar de JSON (Revisa si tu API Key es válida). Vista previa: {preview}"
+                    DIAGNOSTICO_ESTADO = f"Página {page}: Recibido HTML en lugar de JSON. Vista previa: {preview}"
                 else:
                     DIAGNOSTICO_ESTADO = f"Página {page}: HTTP {res.status_code} - Detalle: {preview}"
                 break
@@ -66,10 +63,8 @@ threading.Thread(target=planificador_background, daemon=True).start()
 @app.get("/api/nfts")
 def obtener_nfts():
     return {
-        "status": "ok", 
-        "total": len(BASE_DE_DATOS_NFTS), 
+        "status": "ok",
+        "total": len(BASE_DE_DATOS_NFTS),
         "diagnostico": DIAGNOSTICO_ESTADO,
-        "items": BASE_DE_DATOS_NFTS
-    }
         "items": BASE_DE_DATOS_NFTS
     }
