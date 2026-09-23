@@ -1,9 +1,8 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-import requests
+from curl_cffi import requests as requests_cffi
 import threading
 import time
-import urllib.parse
 
 app = FastAPI()
 
@@ -14,39 +13,37 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ⚠️ PEGA AQUÍ TU API KEY REAL DE SCRAPERAPI (entre las comillas)
-SCRAPER_API_KEY = "dcc45acdd5909e73b6be2daf0c2edeb7"
-
 BASE_DE_DATOS_NFTS = []
 DIAGNOSTICO_ESTADO = "Iniciando servidor..."
 
 def actualizar_subastas_xdraco():
     global BASE_DE_DATOS_NFTS, DIAGNOSTICO_ESTADO
-    print("🔄 Consultando xDRACO...")
+    print("🔄 Consultando xDRACO con huella TLS de Chrome...")
     nfts_acumulados = []
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Referer": "https://nft.xdraco.com/",
+        "Origin": "https://nft.xdraco.com",
+        "Accept": "application/json, text/plain, */*"
+    }
 
     for page in range(1, 4):
         url_target = f"https://nft.xdraco.com/api/nft/lists?listType=sale&languageCode=es&page={page}"
-        # Sin &render=true para consulta directa en segundos
-        proxy_url = f"http://api.scraperapi.com?api_key={SCRAPER_API_KEY}&url={urllib.parse.quote(url_target)}"
         
         try:
-            res = requests.get(proxy_url, timeout=60)
-            contenido = res.text.strip()
+            # impersonate="chrome" bypasses Cloudflare sin depender de terceros
+            res = requests_cffi.get(url_target, headers=headers, impersonate="chrome", timeout=15)
             
-            if res.status_code == 200 and contenido.startswith("{"):
+            if res.status_code == 200:
                 data = res.json()
                 items = data.get("data", {}).get("lists", [])
                 nfts_acumulados.extend(items)
             else:
-                preview = contenido[:70].replace("\n", " ")
-                if contenido.startswith("<"):
-                    DIAGNOSTICO_ESTADO = f"Página {page}: Recibido HTML en lugar de JSON. Vista previa: {preview}"
-                else:
-                    DIAGNOSTICO_ESTADO = f"Página {page}: HTTP {res.status_code} - Detalle: {preview}"
+                DIAGNOSTICO_ESTADO = f"Página {page}: HTTP {res.status_code} - Respuesta: {res.text[:80]}"
                 break
         except Exception as e:
-            DIAGNOSTICO_ESTADO = f"Error de conexión en página {page}: {str(e)}"
+            DIAGNOSTICO_ESTADO = f"Error en página {page}: {str(e)}"
             break
 
     if nfts_acumulados:
