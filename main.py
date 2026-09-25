@@ -42,22 +42,65 @@ WEMIX_BODY_BASE = {
 }
 
 
-def parsear_nft(raw_item: dict) -> dict:
+def parsear_nft(raw_item: dict) -> dict | None:
     """
-    OJO: esto es un placeholder. En cuanto me pases un ejemplo real
-    de la respuesta JSON, ajusto estas claves a las reales
-    (name, level, price, tokenId, image, etc.) en vez de adivinar.
+    Mapeo basado en el esquema REAL de /market/explore/v3/nfts.
+    - Los atributos del personaje vienen en metaData.attributes como
+      pares {key, value}: PowerScore, Level, Class, Server, CharacterName, NFTEnhancement.
+    - El precio de la orden activa viene en wei (18 decimales) en order.price.amount,
+      y ya trae su equivalente en USD en order.price.dollarPrice.
+    - metaData.external_url ya es el link OFICIAL y verificable a xdraco.com,
+      no hay que construirlo ni adivinarlo.
     """
+    meta = raw_item.get("metaData") or {}
+    order = raw_item.get("order") or {}
+    price_obj = order.get("price") or {}
+
+    # attributes -> dict plano {"PowerScore": 452561, "Class": "Lancer", ...}
+    attrs = {a.get("key"): a.get("value") for a in meta.get("attributes", []) if a.get("key")}
+
+    if not attrs and not meta:
+        # Registro sin datos utilizables: lo descartamos en vez de rellenarlo con basura
+        return None
+
+    # Precio: amount viene en wei (string), lo convertimos a WEMIX legible
+    precio_wemix = None
+    amount_raw = price_obj.get("amount")
+    if amount_raw not in (None, ""):
+        try:
+            precio_wemix = round(int(amount_raw) / 1e18, 2)
+        except (ValueError, TypeError):
+            precio_wemix = None
+
+    precio_usd = price_obj.get("dollarPrice")
+    try:
+        precio_usd = round(float(precio_usd), 2) if precio_usd is not None else None
+    except (ValueError, TypeError):
+        precio_usd = None
+
+    status = raw_item.get("currentStatus") or {}
+
     return {
-        "id": raw_item.get("tokenId") or raw_item.get("id"),
-        "name": raw_item.get("name") or raw_item.get("nftName") or "Desconocido",
-        "class": raw_item.get("class") or raw_item.get("characterClass") or "N/A",
-        "level": raw_item.get("level") or raw_item.get("lv") or "N/A",
-        "power": raw_item.get("power") or raw_item.get("powerScore") or "N/A",
-        "price": raw_item.get("price") or raw_item.get("salePrice") or "Consultar",
-        "image": raw_item.get("image") or raw_item.get("imageUrl") or "",
-        "url": f"https://wemixplay.com/@m4character_nft?tab=marketplace",
-        "raw": raw_item,  # dejamos el objeto crudo mientras validamos el mapeo
+        "id": raw_item.get("tid") or order.get("tid"),
+        "name": attrs.get("CharacterName") or raw_item.get("nftName") or "Desconocido",
+        "class": attrs.get("Class") or "N/A",
+        "level": attrs.get("Level"),
+        "power": attrs.get("PowerScore"),
+        "enhancement": attrs.get("NFTEnhancement", 0),
+        "server": attrs.get("Server"),
+        "price_wemix": precio_wemix,
+        "price_usd": precio_usd,
+        "price_display": (
+            f"{precio_wemix:,} WEMIX (≈${precio_usd:,})"
+            if precio_wemix is not None and precio_usd is not None
+            else "Consultar"
+        ),
+        "image": meta.get("image") or raw_item.get("nftImage") or "",
+        # Link OFICIAL real, tal cual lo entrega WEMIX PLAY -> verificable en xdraco.com
+        "url": meta.get("external_url") or "",
+        "is_auction": status.get("isAuction", False),
+        "is_bidding": status.get("isBidding", False),
+        "sale_deadline_unix": order.get("saleDeadLineTime"),
     }
 
 
@@ -76,15 +119,21 @@ async def obtener_nfts_reales(paginas: int = 1):
                 resp.raise_for_status()
                 data = resp.json()
 
-                # OJO: ajustar esta ruta según la forma real del JSON
-                # (puede ser data["list"], data["data"]["items"], etc.)
-                items = data.get("list") or data.get("items") or data.get("data") or []
+                if data.get("result") != 0:
+                    # La API misma reporta error (result != 0), no seguir inventando datos
+                    DIAGNOSTICO_ESTADO = f"⚠️ API respondió error: {data.get('resultString')} - {data.get('desc')}"
+                    break
+
+                payload = data.get("data") or {}
+                items = payload.get("result") or []
 
                 if not items:
                     break
 
                 for raw in items:
-                    nfts_procesados.append(parsear_nft(raw))
+                    parsed = parsear_nft(raw)
+                    if parsed is not None:
+                        nfts_procesados.append(parsed)
 
         if nfts_procesados:
             BASE_DE_DATOS_NFTS = nfts_procesados
