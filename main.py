@@ -1,138 +1,108 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from playwright.async_api import async_playwright
+import httpx
 import asyncio
 from contextlib import asynccontextmanager
-import re
 
 BASE_DE_DATOS_NFTS = []
 DIAGNOSTICO_ESTADO = "Iniciando servidor..."
 
-def parsear_detalles_tarjeta(text_block, raw_href, img_url):
-    CLASES_MIR4 = ["Arbalist", "Taoist", "Sorcerer", "Lancer", "Warrior", "Darkist", "Lionheart"]
-    
-    clase = "Warrior"
-    nombre = "Personaje MIR4"
-    nivel = "Lv. 100"
-    poder = "300,000 PS"
-    precio = "1,000 WEMIX"
+# --- Config de la llamada real a WEMIX PLAY ---
+WEMIX_URL = "https://api.wemixplay.com/market/explore/v3/nfts"
 
-    # Limpiar líneas vacías y duplicadas
-    lines = [l.strip() for l in text_block.split("\n") if l.strip()]
+WEMIX_HEADERS = {
+    "accept": "application/json, text/plain, */*",
+    "accept-language": "es-ES,es;q=0.9",
+    "content-type": "application/json",
+    "origin": "https://wemixplay.com",
+    "referer": "https://wemixplay.com/",
+    "user-agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36"
+    ),
+}
 
-    # 1. Detectar Clase
-    for line in lines:
-        for c in CLASES_MIR4:
-            if c.lower() in line.lower():
-                clase = c
-                break
+# Body base tomado de la petición real capturada en el navegador.
+# page se sobreescribe al paginar.
+WEMIX_BODY_BASE = {
+    "sortOption": "byOldestOfferTime",
+    "address": "0x1dbf9b33e59972ed753cae1423f4f23deec70cc9",
+    "onAuction": True,
+    "pagination": True,
+    "pageSize": 20,
+    "onLike": False,
+    "addressFilter": [
+        "0x0811a301173f15a8c4434138e78d41bbb5bf5e28",
+        "0x1dbf9b33e59972ed753cae1423f4f23deec70cc9",
+    ],
+    "attrNumberOption": [],
+    "attrStringOption": [],
+    "onSale": True,
+    "onBidding": True,
+}
 
-    # 2. Detectar Nivel
-    for line in lines:
-        if "lv" in line.lower() or "level" in line.lower():
-            nums = re.findall(r'\d+', line)
-            if nums:
-                nivel = f"Lv. {nums[0]}"
-                break
 
-    # 3. Detectar Poder (PS)
-    for line in lines:
-        if "ps" in line.lower() or ("," in line and line.replace(",", "").isdigit() and len(line.replace(",", "")) >= 5):
-            nums = re.findall(r'[\d,]+', line)
-            if nums:
-                poder = f"{nums[0]} PS"
-                break
-
-    # 4. Detectar Precio
-    for line in lines:
-        if "wemix" in line.lower() or "$" in line:
-            precio = line
-            break
-
-    # 5. Detectar Nombre Real (excluyendo metadatos)
-    for line in lines:
-        line_lower = line.lower()
-        is_clase = any(c.lower() in line_lower for c in CLASES_MIR4)
-        is_lvl = "lv" in line_lower or "level" in line_lower
-        is_ps = "ps" in line_lower
-        is_price = "wemix" in line_lower or "$" in line or line.replace(",", "").isdigit()
-        
-        if not is_clase and not is_lvl and not is_ps and not is_price and len(line) > 2:
-            nombre = line
-            break
-
-    # Construir URL final
-    if raw_href.startswith("http"):
-        final_url = raw_href
-    elif raw_href.startswith("/"):
-        final_url = f"https://nft.hofgamer.com{raw_href}"
-    else:
-        final_url = f"https://nft.hofgamer.com/mir4/nft/{raw_href}"
-
+def parsear_nft(raw_item: dict) -> dict:
+    """
+    OJO: esto es un placeholder. En cuanto me pases un ejemplo real
+    de la respuesta JSON, ajusto estas claves a las reales
+    (name, level, price, tokenId, image, etc.) en vez de adivinar.
+    """
     return {
-        "name": nombre,
-        "class": clase,
-        "level": nivel,
-        "power": poder,
-        "price": precio,
-        "image": img_url if img_url else "https://www.xdraco.com/nft/assets/img/common/thumb-default.png",
-        "url": final_url
+        "id": raw_item.get("tokenId") or raw_item.get("id"),
+        "name": raw_item.get("name") or raw_item.get("nftName") or "Desconocido",
+        "class": raw_item.get("class") or raw_item.get("characterClass") or "N/A",
+        "level": raw_item.get("level") or raw_item.get("lv") or "N/A",
+        "power": raw_item.get("power") or raw_item.get("powerScore") or "N/A",
+        "price": raw_item.get("price") or raw_item.get("salePrice") or "Consultar",
+        "image": raw_item.get("image") or raw_item.get("imageUrl") or "",
+        "url": f"https://wemixplay.com/@m4character_nft?tab=marketplace",
+        "raw": raw_item,  # dejamos el objeto crudo mientras validamos el mapeo
     }
 
-async def obtener_nfts_con_playwright():
+
+async def obtener_nfts_reales(paginas: int = 1):
     global BASE_DE_DATOS_NFTS, DIAGNOSTICO_ESTADO
-    DIAGNOSTICO_ESTADO = "🔄 Sincronizando con HofGamer..."
+    DIAGNOSTICO_ESTADO = "Consultando API oficial de WEMIX PLAY..."
     nfts_procesados = []
 
     try:
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(
-                headless=True,
-                args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]
-            )
-            context = await browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-                viewport={"width": 1400, "height": 900}
-            )
-            page = await context.new_page()
-            await page.goto("https://nft.hofgamer.com/mir4/?limit=48&page=1", wait_until="domcontentloaded", timeout=60000)
+        async with httpx.AsyncClient(timeout=20) as client:
+            for page in range(1, paginas + 1):
+                body = dict(WEMIX_BODY_BASE)
+                body["page"] = page
 
-            await asyncio.sleep(5)
+                resp = await client.post(WEMIX_URL, headers=WEMIX_HEADERS, json=body)
+                resp.raise_for_status()
+                data = resp.json()
 
-            raw_cards = await page.evaluate("""() => {
-                const cards = Array.from(document.querySelectorAll("a[href*='/character/'], a[href*='/nft/'], div[class*='card'], div[class*='item']"));
-                return cards.map((c, idx) => {
-                    const text = c.innerText || "";
-                    const img = c.querySelector("img") ? c.querySelector("img").src : "";
-                    let href = c.getAttribute("href") || (c.querySelector("a") ? c.querySelector("a").getAttribute("href") : "");
-                    return { id: idx + 1, text, image: img, href };
-                }).filter(item => item.text.trim().length > 0);
-            }""")
+                # OJO: ajustar esta ruta según la forma real del JSON
+                # (puede ser data["list"], data["data"]["items"], etc.)
+                items = data.get("list") or data.get("items") or data.get("data") or []
 
-            for item in raw_cards:
-                parsed = parsear_detalles_tarjeta(item["text"], item["href"], item["image"])
+                if not items:
+                    break
 
-                nfts_procesados.append({
-                    "id": item["id"],
-                    "name": parsed["name"],
-                    "class": parsed["class"],
-                    "level": parsed["level"],
-                    "power": parsed["power"],
-                    "price": parsed["price"],
-                    "image": parsed["image"],
-                    "url": parsed["url"]
-                })
+                for raw in items:
+                    nfts_procesados.append(parsear_nft(raw))
 
+        if nfts_procesados:
             BASE_DE_DATOS_NFTS = nfts_procesados
-            DIAGNOSTICO_ESTADO = f"✅ Éxito: {len(nfts_procesados)} NFTs sincronizados."
-            await browser.close()
+            DIAGNOSTICO_ESTADO = f"✅ Éxito: {len(nfts_procesados)} NFTs reales cargados desde WEMIX PLAY."
+        else:
+            DIAGNOSTICO_ESTADO = "⚠️ La API respondió pero sin items. Revisar estructura del JSON."
+
+    except httpx.HTTPStatusError as e:
+        DIAGNOSTICO_ESTADO = f"❌ Error HTTP {e.response.status_code}: {e.response.text[:200]}"
     except Exception as e:
         DIAGNOSTICO_ESTADO = f"❌ Error: {str(e)}"
 
+
 async def planificador_background():
     while True:
-        await obtener_nfts_con_playwright()
+        await obtener_nfts_reales(paginas=1)
         await asyncio.sleep(900)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -140,8 +110,10 @@ async def lifespan(app: FastAPI):
     yield
     task.cancel()
 
+
 app = FastAPI(lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
 
 @app.get("/api/nfts")
 async def obtener_nfts():
@@ -149,5 +121,5 @@ async def obtener_nfts():
         "status": "ok",
         "total": len(BASE_DE_DATOS_NFTS),
         "diagnostico": DIAGNOSTICO_ESTADO,
-        "items": BASE_DE_DATOS_NFTS
+        "items": BASE_DE_DATOS_NFTS,
     }
