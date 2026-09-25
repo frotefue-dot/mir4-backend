@@ -104,14 +104,21 @@ def parsear_nft(raw_item: dict) -> dict | None:
     }
 
 
-async def obtener_nfts_reales(paginas: int = 1):
+async def obtener_nfts_reales(max_paginas: int = 30):
+    """
+    Pagina automáticamente usando el totalCount que la propia API reporta,
+    hasta cubrir todo el mercado o hasta max_paginas (límite de seguridad
+    para no martillar la API de WEMIX PLAY con demasiadas peticiones seguidas).
+    """
     global BASE_DE_DATOS_NFTS, DIAGNOSTICO_ESTADO
     DIAGNOSTICO_ESTADO = "Consultando API oficial de WEMIX PLAY..."
     nfts_procesados = []
+    total_reportado = None
 
     try:
         async with httpx.AsyncClient(timeout=20) as client:
-            for page in range(1, paginas + 1):
+            page = 1
+            while True:
                 body = dict(WEMIX_BODY_BASE)
                 body["page"] = page
 
@@ -120,11 +127,11 @@ async def obtener_nfts_reales(paginas: int = 1):
                 data = resp.json()
 
                 if data.get("result") != 0:
-                    # La API misma reporta error (result != 0), no seguir inventando datos
                     DIAGNOSTICO_ESTADO = f"⚠️ API respondió error: {data.get('resultString')} - {data.get('desc')}"
                     break
 
                 payload = data.get("data") or {}
+                total_reportado = payload.get("totalCount", total_reportado)
                 items = payload.get("result") or []
 
                 if not items:
@@ -135,9 +142,20 @@ async def obtener_nfts_reales(paginas: int = 1):
                     if parsed is not None:
                         nfts_procesados.append(parsed)
 
+                # ¿Ya cubrimos todo el mercado según la propia API?
+                if total_reportado is not None and len(nfts_procesados) >= total_reportado:
+                    break
+
+                page += 1
+                if page > max_paginas:
+                    break
+
+                await asyncio.sleep(0.5)  # pequeña pausa entre páginas, no martillar la API
+
         if nfts_procesados:
             BASE_DE_DATOS_NFTS = nfts_procesados
-            DIAGNOSTICO_ESTADO = f"✅ Éxito: {len(nfts_procesados)} NFTs reales cargados desde WEMIX PLAY."
+            extra = f" de {total_reportado} reportados por la API" if total_reportado else ""
+            DIAGNOSTICO_ESTADO = f"✅ Éxito: {len(nfts_procesados)} NFTs reales cargados desde WEMIX PLAY{extra}."
         else:
             DIAGNOSTICO_ESTADO = "⚠️ La API respondió pero sin items. Revisar estructura del JSON."
 
@@ -149,7 +167,7 @@ async def obtener_nfts_reales(paginas: int = 1):
 
 async def planificador_background():
     while True:
-        await obtener_nfts_reales(paginas=1)
+        await obtener_nfts_reales()
         await asyncio.sleep(900)
 
 
