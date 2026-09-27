@@ -1,3 +1,4 @@
+import re
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
@@ -89,6 +90,10 @@ def parsear_nft(raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     equipo = parsear_equipo(item_dto)
     equipo_trade = [e for e in equipo if e["tradeable"]]
 
+    image_path = raw.get("imagePath") or ""
+    grade_match = re.search(r"grade(\d)", image_path)
+    grade = int(grade_match.group(1)) if grade_match else None
+
     return {
         "id": seq,
         "name": raw.get("name") or "Desconocido",
@@ -97,7 +102,8 @@ def parsear_nft(raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "power": raw.get("powerScoreLong"),
         "price_wemix": raw.get("price"),
         "server": raw.get("server"),
-        "image": raw.get("imagePath") or "",
+        "grade": grade,
+        "image": image_path,
         "url": f"https://www.xdraco.com/nft/trade/{seq}",
         "tradable_item_count": raw.get("tradableItemCount", 0),
         "equipment": equipo,
